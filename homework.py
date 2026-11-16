@@ -10,9 +10,9 @@ from dotenv import load_dotenv
 from vk_api.utils import get_random_id
 
 from exceptions import (
-    EndpointRequestError,
     EndpointStatusError,
     MissingKeyError,
+    MissingTokensError,
     UnknownStatusError,
 )
 
@@ -34,14 +34,29 @@ HOMEWORK_VERDICTS = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
-TOKEN_NAMES = ('PRACTICUM_TOKEN', 'VK_TOKEN', 'VK_USER_ID')
-
 logger = logging.getLogger(__name__)
 
 
 def check_tokens():
-    """Возвращает имена обязательных переменных окружения, которых нет."""
-    return [name for name in TOKEN_NAMES if not globals()[name]]
+    """Проверяет, что заданы все обязательные переменные окружения."""
+    tokens = (
+        ('PRACTICUM_TOKEN', PRACTICUM_TOKEN),
+        ('VK_TOKEN', VK_TOKEN),
+        ('VK_USER_ID', VK_USER_ID),
+    )
+    missing_tokens = []
+    for name, token in tokens:
+        if not token:
+            logger.critical(
+                f'Отсутствует обязательная переменная окружения: {name}'
+            )
+            missing_tokens.append(name)
+    if missing_tokens:
+        raise MissingTokensError(
+            'Отсутствуют обязательные переменные окружения: '
+            f'{", ".join(missing_tokens)}. '
+            'Программа принудительно остановлена.'
+        )
 
 
 def send_message(vk, message):
@@ -74,7 +89,7 @@ def get_api_answer(timestamp):
     try:
         response = requests.get(**request_params)
     except requests.RequestException as error:
-        raise EndpointRequestError(
+        raise ConnectionError(
             'Сбой при запросе к {url} с параметрами {params}: {error}'.format(
                 error=error, **request_params
             )
@@ -82,7 +97,8 @@ def get_api_answer(timestamp):
     if response.status_code != HTTPStatus.OK:
         raise EndpointStatusError(
             f'Эндпоинт {ENDPOINT} недоступен. '
-            f'Код ответа API: {response.status_code}'
+            f'Код ответа API: {response.status_code}, '
+            f'причина: {response.reason}, текст: {response.text}'
         )
     return response.json()
 
@@ -93,9 +109,8 @@ def check_response(response):
         raise TypeError(
             f'Ответ API должен быть словарём, получен {type(response)}'
         )
-    for key in ('homeworks', 'current_date'):
-        if key not in response:
-            raise MissingKeyError(f'В ответе API нет ключа {key}')
+    if 'homeworks' not in response:
+        raise MissingKeyError('В ответе API нет ключа homeworks')
     homeworks = response['homeworks']
     if not isinstance(homeworks, list):
         raise TypeError(
@@ -123,20 +138,12 @@ def parse_status(homework):
 
 def main():
     """Основная логика работы бота."""
-    missing_tokens = check_tokens()
-    if missing_tokens:
-        logger.critical(
-            'Отсутствуют обязательные переменные окружения: '
-            f'{", ".join(missing_tokens)}. '
-            'Программа принудительно остановлена.'
-        )
-        sys.exit(1)
+    check_tokens()
 
     vk_session = vk_api.VkApi(token=VK_TOKEN)
     vk = vk_session.get_api()
     timestamp = int(time.time())
-    last_status_message = ''
-    last_error_message = ''
+    last_message = ''
 
     while True:
         try:
@@ -144,22 +151,16 @@ def main():
             homeworks = check_response(response)
             if not homeworks:
                 logger.debug('Новых статусов в ответе API нет')
-                timestamp = response['current_date']
-                last_error_message = ''
                 continue
             message = parse_status(homeworks[0])
-            if (
-                message == last_status_message
-                or send_message(vk, message)
-            ):
-                last_status_message = message
-                timestamp = response['current_date']
-            last_error_message = ''
+            if message != last_message and send_message(vk, message):
+                last_message = message
+                timestamp = response.get('current_date', timestamp)
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
-            logger.error(message, exc_info=True)
-            if message != last_error_message and send_message(vk, message):
-                last_error_message = message
+            logger.error(message)
+            if message != last_message and send_message(vk, message):
+                last_message = message
         finally:
             time.sleep(RETRY_PERIOD)
 
@@ -169,6 +170,9 @@ if __name__ == '__main__':
         level=logging.DEBUG,
         format='%(asctime)s [%(levelname)s] %(funcName)s:%(lineno)d '
                '%(message)s',
-        handlers=[logging.StreamHandler(sys.stdout)],
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(__file__ + '.log', encoding='utf-8'),
+        ],
     )
     main()

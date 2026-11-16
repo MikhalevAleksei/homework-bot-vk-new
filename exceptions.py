@@ -1,8 +1,8 @@
 """Исключения бота-ассистента."""
 
 
-class EndpointRequestError(Exception):
-    """Запрос к API Практикум Домашки не удался."""
+class MissingTokensError(Exception):
+    """Не заданы обязательные переменные окружения."""
 
 
 class EndpointStatusError(Exception):
@@ -11,10 +11,6 @@ class EndpointStatusError(Exception):
 
 class MissingKeyError(KeyError):
     """В ответе API или в данных о домашней работе нет нужного ключа."""
-
-    def __str__(self):
-        """Возвращает текст ошибки без кавычек, которые добавляет KeyError."""
-        return str(self.args[0]) if self.args else ''
 
 
 class UnknownStatusError(ValueError):
